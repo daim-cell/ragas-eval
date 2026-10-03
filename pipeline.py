@@ -16,8 +16,10 @@ from config import (
     COLLECTION_NAME,
     DOCUMENTS_DIR,
     EMBED_MODEL,
+    LLM_CONTEXT_WINDOW,
     LLM_MODEL,
     OLLAMA_BASE_URL,
+    OLLAMA_TIMEOUT,
     PERSIST_DIR,
     SYSTEM_PROMPT,
     TOP_K,
@@ -25,7 +27,12 @@ from config import (
 
 
 def _configure_settings() -> None:
-    Settings.llm = Ollama(model=LLM_MODEL, base_url=OLLAMA_BASE_URL, request_timeout=120.0)
+    Settings.llm = Ollama(
+        model=LLM_MODEL,
+        base_url=OLLAMA_BASE_URL,
+        request_timeout=OLLAMA_TIMEOUT,
+        context_window=LLM_CONTEXT_WINDOW,
+    )
     Settings.embed_model = OllamaEmbedding(model_name=EMBED_MODEL, base_url=OLLAMA_BASE_URL)
 
 
@@ -98,13 +105,12 @@ def build_query_engine(index: VectorStoreIndex):
     return index.as_query_engine(similarity_top_k=TOP_K, text_qa_template=qa_prompt)
 
 
-def query_pipeline(question: str) -> Dict[str, Any]:
-    # Load (or lazily build) the index from the persistent ChromaDB store
-    index = load_index()
+def run_query(query_engine, question: str) -> Dict[str, Any]:
+    """Execute one question against an already-built query engine.
 
-    # Attach the query engine with custom grounding prompt and top-k retrieval
-    query_engine = build_query_engine(index)
-
+    Use this in batch loops (e.g. eval) to avoid re-initialising the index
+    and LLM client on every call — build the engine once, call this N times.
+    """
     # Execute the query — LlamaIndex retrieves TOP_K chunks then synthesises an answer
     response = query_engine.query(question)
 
@@ -126,3 +132,13 @@ def query_pipeline(question: str) -> Dict[str, Any]:
         "contexts": contexts,
         "source_nodes": source_nodes,
     }
+
+
+def query_pipeline(question: str) -> Dict[str, Any]:
+    # Load (or lazily build) the index from the persistent ChromaDB store
+    index = load_index()
+
+    # Attach the query engine with custom grounding prompt and top-k retrieval
+    query_engine = build_query_engine(index)
+
+    return run_query(query_engine, question)
