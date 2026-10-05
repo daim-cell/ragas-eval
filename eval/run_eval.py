@@ -11,10 +11,13 @@ Usage:
     python eval/run_eval.py              # all questions
     python eval/run_eval.py --limit 10   # first 10 questions only
     python eval/run_eval.py --metrics answer_relevancy   # re-score one metric from the cached answers
+    python eval/run_eval.py --top-k 10   # experiment: retrieve 10 chunks (own cache + results, tag topk10)
+    python eval/run_eval.py --top-k 10 --prompt relaxed   # tag topk10_relaxed
 
 Output:
-    eval/results.json                    — per-sample scores + aggregate summary
-    eval/results_<metrics>_limit<N>.json — same, for a --limit and/or --metrics run (leaves results.json untouched)
+    eval/results.json                    — per-sample scores + aggregate summary + the config used
+    eval/results_<tag>_<metrics>_limit<N>.json — same, for a --tag/--top-k, --metrics and/or --limit run
+                                           (leaves results.json untouched)
 
 Note: answer_relevancy uses CalibratedResponseRelevancePrompt (below), not the stock RAGAS prompt.
 """
@@ -44,7 +47,17 @@ from ragas.embeddings import LangchainEmbeddingsWrapper
 from langchain_community.llms import Ollama as LangchainOllama
 from langchain_community.embeddings import OllamaEmbeddings
 
-from config import EMBED_MODEL, JUDGE_MODEL, JUDGE_TIMEOUT, OLLAMA_BASE_URL
+from config import (
+    CHUNK_OVERLAP,
+    CHUNK_SIZE,
+    EMBED_MODEL,
+    JUDGE_MODEL,
+    JUDGE_TIMEOUT,
+    LLM_MODEL,
+    OLLAMA_BASE_URL,
+    PROMPT_VARIANTS,
+    TOP_K,
+)
 
 # Private module: RAGAS 0.4.x doesn't re-export its prompt classes from ragas.metrics.
 from ragas.metrics._answer_relevance import (
@@ -125,15 +138,15 @@ def load_golden(path: str) -> list[dict]:
         return [json.loads(line) for line in f if line.strip()]
 
 
-def run_pipeline_over_golden(samples: list[dict]) -> list[dict]:
+def run_pipeline_over_golden(samples: list[dict], top_k: int = TOP_K, prompt: str = "strict") -> list[dict]:
     from pipeline import build_query_engine, load_index, run_query
 
     # Build index and query engine ONCE — reused for all 100 questions.
     # Previously query_pipeline() did this inside the loop, causing a fresh
     # ChromaDB connection + Ollama client init on every single question.
-    print("  Initialising index and query engine...")
+    print(f"  Initialising index and query engine (top_k={top_k}, prompt={prompt})...")
     index = load_index()
-    query_engine = build_query_engine(index)
+    query_engine = build_query_engine(index, top_k=top_k, prompt=prompt)
     print("  Ready.\n")
 
     results = []
@@ -195,8 +208,21 @@ def build_judge():
     return judge_llm, judge_embeddings
 
 
-def main(limit: int | None = None, metric_names: list[str] | None = None) -> None:
+def main(
+    limit: int | None = None,
+    metric_names: list[str] | None = None,
+    top_k: int | None = None,
+    tag: str | None = None,
+    prompt: str = "strict",
+) -> None:
     metric_names = metric_names or list(ALL_METRICS)
+    # Any non-baseline setting without a tag would read/overwrite the baseline cache, so it gets one
+    # derived from the settings, e.g. "topk10", "relaxed" or "topk10_relaxed".
+    if tag is None:
+        parts = ([f"topk{top_k}"] if top_k is not None else []) + ([prompt] if prompt != "strict" else [])
+        tag = "_".join(parts) or None
+    effective_top_k = top_k if top_k is not None else TOP_K
+    cache_path = CACHE_PATH.replace(".json", f"_{tag}.json") if tag else CACHE_PATH
     if not os.path.exists(GOLDEN_PATH):
         print(f"Golden dataset not found at {GOLDEN_PATH}")
         print("Run: python eval/prepare_golden_dataset.py")
@@ -212,16 +238,16 @@ def main(limit: int | None = None, metric_names: list[str] | None = None) -> Non
     print("Step 1: Running RAG pipeline over golden questions...")
     print("=" * 60)
     # The pipeline step takes ~30 min; cache it so a failure in scoring doesn't throw it away.
-    # Delete eval/pipeline_cache.json to force a fresh run.
-    if os.path.exists(CACHE_PATH):
-        with open(CACHE_PATH) as f:
+    # Delete the cache file (eval/pipeline_cache[_<tag>].json) to force a fresh run.
+    if os.path.exists(cache_path):
+        with open(cache_path) as f:
             results = json.load(f)[: len(samples)]
-        print(f"Loaded {len(results)} cached pipeline results from {CACHE_PATH}")
+        print(f"Loaded {len(results)} cached pipeline results from {cache_path}")
     else:
-        results = run_pipeline_over_golden(samples)
+        results = run_pipeline_over_golden(samples, top_k=effective_top_k, prompt=prompt)
         # Never cache a --limit run: a later full run would load only the first N answers
         if limit is None:
-            with open(CACHE_PATH, "w") as f:
+            with open(cache_path, "w") as f:
                 json.dump(results, f, indent=2)
     print(f"\nPipeline complete. {len(results)} answers generated.\n")
 
@@ -265,10 +291,22 @@ def main(limit: int | None = None, metric_names: list[str] | None = None) -> Non
     output = {
         "aggregate": aggregate,
         "scored": {"n_samples": len(results), **scored},
+        # The settings that produced these numbers, so a results file is self-describing
+        "config": {
+            "top_k": effective_top_k,
+            "prompt": prompt,
+            "system_prompt": PROMPT_VARIANTS[prompt]["system"],
+            "chunk_size": CHUNK_SIZE,
+            "chunk_overlap": CHUNK_OVERLAP,
+            "llm_model": LLM_MODEL,
+            "embed_model": EMBED_MODEL,
+            "judge_model": JUDGE_MODEL,
+            "tag": tag,
+        },
         "samples": results,
     }
-    # A partial run (--limit and/or --metrics) gets its own file so it can't clobber the full results.json
-    suffix = ""
+    # A tagged / partial run (--tag, --limit, --metrics) gets its own file so it can't clobber results.json
+    suffix = f"_{tag}" if tag else ""
     if set(metric_names) != set(ALL_METRICS):
         suffix += "_" + "+".join(metric_names)
     if limit is not None:
@@ -299,5 +337,14 @@ if __name__ == "__main__":
                         help="only evaluate the first N golden questions (default: all)")
     parser.add_argument("--metrics", nargs="+", choices=list(ALL_METRICS), default=None, metavar="METRIC",
                         help=f"only score these metrics (default: all). Choices: {', '.join(ALL_METRICS)}")
+    parser.add_argument("--top-k", type=int, default=None, metavar="K",
+                        help=f"retrieve K chunks per question instead of config.TOP_K ({TOP_K}); "
+                             "results/cache are tagged topk<K> unless --tag is given")
+    parser.add_argument("--prompt", choices=list(PROMPT_VARIANTS), default="strict",
+                        help="answer-generation prompt: 'strict' (baseline, refuses unless the context "
+                             "states the answer) or 'relaxed' (answers from partial context)")
+    parser.add_argument("--tag", default=None,
+                        help="label for this configuration; gives it its own cache and results files "
+                             "(default: derived from --top-k / --prompt)")
     args = parser.parse_args()
-    main(limit=args.limit, metric_names=args.metrics)
+    main(limit=args.limit, metric_names=args.metrics, top_k=args.top_k, tag=args.tag, prompt=args.prompt)

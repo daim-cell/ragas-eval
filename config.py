@@ -28,3 +28,28 @@ SYSTEM_PROMPT = (
     "'I don't know based on the provided documents.' "
     "Never guess, fabricate, or extrapolate beyond what the context explicitly states."
 )
+
+# Experiment variant: lets the model answer from partial context instead of refusing. In the baseline run
+# 33/100 answers were the exact refusal above, and 16 of those happened with the reference chunk retrieved.
+# Wording is generic (not written from golden-set answers). Selected with `run_eval.py --prompt relaxed`.
+RELAXED_SYSTEM_PROMPT = (
+    "You are a helpful question-answering assistant. "
+    "Base your answer on the information in the context below and give the most useful answer you can from it. "
+    "If the context only partly answers the question, answer the parts it supports and say what is missing. "
+    "Only respond with 'I don't know based on the provided documents.' if the context contains nothing "
+    "relevant to the question. "
+    "Do not state facts that the context does not support."
+)
+
+# The user message also carries an instruction line, so each variant needs both pieces of text.
+# "strict" must stay byte-identical to what the baseline run used.
+PROMPT_VARIANTS = {
+    "strict": {
+        "system": SYSTEM_PROMPT,
+        "instruction": "Given the context information and not prior knowledge, answer the query.\n",
+    },
+    "relaxed": {
+        "system": RELAXED_SYSTEM_PROMPT,
+        "instruction": "Given the context information, answer the query as helpfully as you can.\n",
+    },
+}

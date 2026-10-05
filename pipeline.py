@@ -21,7 +21,7 @@ from config import (
     OLLAMA_BASE_URL,
     OLLAMA_TIMEOUT,
     PERSIST_DIR,
-    SYSTEM_PROMPT,
+    PROMPT_VARIANTS,
     TOP_K,
 )
 
@@ -82,11 +82,13 @@ def load_index() -> VectorStoreIndex:
     return VectorStoreIndex.from_vector_store(vector_store, storage_context=storage_context)
 
 
-def build_query_engine(index: VectorStoreIndex):
-    # Inject SYSTEM_PROMPT as a system-role message so the model stays grounded in context
+def build_query_engine(index: VectorStoreIndex, top_k: int = TOP_K, prompt: str = "strict"):
+    # Inject the variant's system prompt as a system-role message so the model stays grounded in context;
+    # "strict" is the baseline, "relaxed" is an experiment (see config.PROMPT_VARIANTS)
+    variant = PROMPT_VARIANTS[prompt]
     qa_prompt = ChatPromptTemplate(
         message_templates=[
-            ChatMessage(role=MessageRole.SYSTEM, content=SYSTEM_PROMPT),
+            ChatMessage(role=MessageRole.SYSTEM, content=variant["system"]),
             ChatMessage(
                 role=MessageRole.USER,
                 content=(
@@ -94,15 +96,14 @@ def build_query_engine(index: VectorStoreIndex):
                     "---------------------\n"
                     "{context_str}\n"
                     "---------------------\n"
-                    "Given the context information and not prior knowledge, "
-                    "answer the query.\n"
-                    "Query: {query_str}\n"
+                    + variant["instruction"]
+                    + "Query: {query_str}\n"
                     "Answer: "
                 ),
             ),
         ]
     )
-    return index.as_query_engine(similarity_top_k=TOP_K, text_qa_template=qa_prompt)
+    return index.as_query_engine(similarity_top_k=top_k, text_qa_template=qa_prompt)
 
 
 def run_query(query_engine, question: str) -> Dict[str, Any]:
