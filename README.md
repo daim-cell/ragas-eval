@@ -211,6 +211,18 @@ Regenerate the same seeded sample with:
 python eval/prepare_golden_dataset.py
 ```
 
+### Experiment report
+
+`eval/experiment_report.ipynb` provides a reproducible analysis of completed
+runs, including scorecards, question-level comparisons, confidence intervals,
+latency, and the effects of the calibrated judge prompt, relaxed generation
+prompt, and larger retrieval depth.
+
+The notebook reads curated result JSON files from `eval/results/` and runtime
+logs from `eval/logs/`. Open it in a Jupyter-compatible environment after
+placing the runs you want to compare in those directories; its `FILES` mapping
+lists the expected filenames and can be adjusted for new experiments.
+
 ## Programmatic usage
 
 For a single query:
@@ -284,6 +296,7 @@ evaluation caches should be regenerated when they affect model answers.
 ├── requirements.txt
 └── eval/
     ├── add_references_to_index.py   # Add missing golden answers to the index
+    ├── experiment_report.ipynb       # Analyze and visualize experiment results
     ├── golden_dataset.jsonl          # 100 reference QA examples
     ├── prepare_golden_dataset.py     # Rebuild the reference dataset
     └── run_eval.py                   # Generate answers and run RAGAS metrics
